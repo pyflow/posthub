@@ -6,7 +6,7 @@ setup(
     install_requires=[
         "sqlalchemy",
         "basepy>=0.3.1",
-        "psycopg2"
+        "psycopg2>=2.8.0"
     ],
     extras_require={
         'dev':[
