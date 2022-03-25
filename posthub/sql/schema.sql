@@ -2,11 +2,22 @@
 
 CREATE TYPE posthub_message_state AS ENUM ('created','retry','active','completed','expired','cancelled', 'failed');
 
+CREATE TYPE posthub_message AS (
+    id bigint,
+    que_name text,
+    state posthub_message_state,
+    created timestamptz,
+    fetched timestamptz,
+    expected timestamptz,
+    data jsonb,
+    msg_schema_version integer
+);
+
 CREATE TABLE if not exists public.posthub_queue_config (
     que_name text DEFAULT 'default'::text PRIMARY KEY,
-    fifo boolean DEFAULT 0 NOT NULL,
+    fifo boolean DEFAULT FALSE NOT NULL,
     msg_expires interval not null default interval '10 minutes',
-    max_retries integer default -1;
+    max_retries integer default -1,
     created timestamptz not null default now(),
     updated timestamptz not null default now()
 
@@ -16,7 +27,7 @@ WITH (fillfactor='90');
 CREATE TABLE if not exists public.posthub_queue (
     id bigserial PRIMARY KEY,
     que_name text DEFAULT 'default'::text NOT NULL,
-    state public.posthub_message_state not null default('created')
+    state public.posthub_message_state not null default('created'),
     retry_count integer DEFAULT 0 NOT NULL,
     completed_at timestamptz,
     expired_at timestamptz,
@@ -26,12 +37,12 @@ CREATE TABLE if not exists public.posthub_queue (
     expected_at timestamptz,
     data jsonb DEFAULT '{}'::jsonb NOT NULL,
     msg_schema_version integer DEFAULT 1,
-    CONSTRAINT queue_length CHECK ((char_length(que_name) <= 100)),
+    CONSTRAINT queue_length CHECK ((char_length(que_name) <= 200)),
     CONSTRAINT valid_data CHECK ((jsonb_typeof(data) = 'object'::text))
 )
 WITH (fillfactor='90');
 
-CREATE INDEX posthub_que_poll_idx
+CREATE INDEX posthub_queue_poll_idx
     ON posthub_queue (que_name, enqueued_at, id)
     WHERE (completed_at IS NULL AND expired_at IS NULL);
 
@@ -41,9 +52,9 @@ CREATE UNLOGGED TABLE if not exists public.posthub_queue_listener (
     listening boolean NOT NULL,
     msg_schema_version integer DEFAULT 1,
     created timestamptz not null default now(),
-    updated timestamptz not null default now()
+    updated timestamptz not null default now(),
     CONSTRAINT valid_queues CHECK (((array_ndims(queues) = 1) AND (array_length(queues, 1) IS NOT NULL)))
-);
+)
 WITH (fillfactor='90');
 
 
@@ -152,3 +163,49 @@ CREATE TRIGGER que_job_notify
   AFTER INSERT ON que_jobs
   FOR EACH ROW
   EXECUTE PROCEDURE public.que_job_notify();
+
+CREATE FUNCTION que_try_get_nowait(que_name text) RETURNS posthub_message AS $$
+  DECLARE
+    found_msg posthub_message;
+    que_config posthub_queue_config%ROWTYPE;
+  BEGIN
+    SELECT config.*
+            INTO STRICT que_config
+            FROM posthub_queue_config as config
+            WHERE
+                config.que_name = $1;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RAISE NOTICE 'Queue % not found', $1;
+            RETURN NULL;
+        WHEN TOO_MANY_ROWS THEN
+            RAISE NOTICE 'Queue % not unique', $1;
+            RETURN NULL;
+
+    RETURN found_msg;
+  END
+$$
+LANGUAGE plpgsql;
+
+CREATE FUNCTION que_try_get_nowait(que_name text, id bigint) RETURNS posthub_message AS $$
+  DECLARE
+    found_msg posthub_message;
+    que_config posthub_queue_config%ROWTYPE;
+  BEGIN
+    SELECT config.*
+            INTO STRICT que_config
+            FROM posthub_queue_config as config
+            WHERE
+                config.que_name = $1;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            RAISE NOTICE 'Queue % not found', $1;
+            RETURN NULL;
+        WHEN TOO_MANY_ROWS THEN
+            RAISE NOTICE 'Queue % not unique', $1;
+            RETURN NULL;
+
+    RETURN found_msg;
+  END
+$$
+LANGUAGE plpgsql;
