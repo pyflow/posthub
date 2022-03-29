@@ -1,2 +1,20 @@
-
-drop function que_try_get_nowait(que_name text);
+drop TYPE IF EXISTS posthub_message_state CASCADE;
+drop TYPE IF EXISTS posthub_message CASCADE;
+drop TABLE IF EXISTS posthub_queue_config CASCADE;
+drop TABLE IF EXISTS posthub_queue CASCADE;
+drop INDEX IF EXISTS posthub_queue_poll_idx ;
+drop INDEX IF EXISTS posthub_queue_poll_working_idx ;
+drop INDEX IF EXISTS posthub_queue_poll_failed_idx ;
+drop INDEX IF EXISTS posthub_queue_all_poll_active_idx ;
+drop INDEX IF EXISTS posthub_queue_all_poll_enqueued_idx ;
+drop FUNCTION IF EXISTS posthub_que_determine_job_state ;
+drop FUNCTION IF EXISTS posthub_que_state_notify ;
+drop FUNCTION IF EXISTS posthub_que_msg_notify ;
+drop TRIGGER IF EXISTS posthub_que_state_notify on posthub_queue ;
+drop TRIGGER IF EXISTS posthub_que_msg_notify on posthub_queue ;
+drop FUNCTION IF EXISTS que_try_get_nowait ;
+drop FUNCTION IF EXISTS que_try_get_message_nowait ;
+drop FUNCTION IF EXISTS que_try_get_failed_nowait ;
+drop FUNCTION IF EXISTS que_length ;
+drop FUNCTION IF EXISTS que_ack_message ;
+drop FUNCTION IF EXISTS que_delete_message ;
