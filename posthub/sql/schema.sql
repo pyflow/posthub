@@ -61,18 +61,25 @@ CREATE INDEX posthub_queue_all_poll_enqueued_idx
 
 
 CREATE FUNCTION posthub_que_determine_job_state(job public.posthub_queue, max_retry integer) RETURNS text AS $$
-  SELECT
-    CASE
-    WHEN job.retry_count = 0 AND job.expired_at IS NULL THEN 'created'
-    WHEN job.retry_count = 0 AND job.expired_at > CURRENT_TIMESTAMP            THEN 'active'
-    WHEN job.retry_count = 0 AND job.expired_atf <= CURRENT_TIMESTAMP            THEN 'expired'
-    WHEN job.retry_count > 0 AND job.retry_count < max_retry AND job.expired_at > CURRENT_TIMESTAMP  THEN 'retry'
-    WHEN job.retry_count > 0 AND job.retry_count < max_retry AND job.expired_at <= CURRENT_TIMESTAMP  THEN 'expired'
-    WHEN job.retry_count > 0 AND job.retry_count >= max_retry THEN 'failed'
-    ELSE                                     'created'
-    END;
+  BEGIN
+    IF job.retry_count = 0 AND job.expired_at IS NULL THEN
+        RETURN 'created';
+    ELSIF job.retry_count = 0 AND job.expired_at > CURRENT_TIMESTAMP THEN
+        RETURN 'active';
+    ELSIF job.retry_count = 0 AND job.expired_atf <= CURRENT_TIMESTAMP THEN
+        RETURN 'expired';
+    ELSIF job.retry_count > 0 AND job.retry_count < max_retry AND job.expired_at > CURRENT_TIMESTAMP  THEN
+        RETURN 'retry';
+    ELSIF job.retry_count > 0 AND job.retry_count < max_retry AND job.expired_at <= CURRENT_TIMESTAMP  THEN
+        RETURN 'expired';
+    ELSIF job.retry_count > 0 AND job.retry_count >= max_retry THEN
+        RETURN 'failed';
+    ELSE
+        RETURN 'created';
+    END IF;
+  END
 $$
-LANGUAGE SQL;
+LANGUAGE plpgsql;
 
 CREATE FUNCTION posthub_que_state_notify() RETURNS trigger AS $$
   DECLARE
@@ -165,26 +172,26 @@ CREATE TRIGGER posthub_que_msg_notify
 
 CREATE FUNCTION que_try_get_nowait(que_name text) RETURNS posthub_message AS $$
   DECLARE
-    found_msg posthub_message;
     que_config posthub_queue_config%ROWTYPE;
+    que_msg  posthub_queue%ROWTYPE;
   BEGIN
     SELECT config.*
             INTO STRICT que_config
             FROM posthub_queue_config as config
             WHERE
-                config.que_name = $1;
+                config.que_name = que_name;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            RAISE NOTICE 'Queue % not found', $1;
+            RAISE NOTICE 'Queue % not found', que_name;
             RETURN NULL;
         WHEN TOO_MANY_ROWS THEN
-            RAISE NOTICE 'Queue % not unique', $1;
+            RAISE NOTICE 'Queue % not unique', que_name;
             RETURN NULL;
 
     FOR que_msg IN (SELECT * FROM posthub_queue
-        WHERE que_name = $1 AND state in ('created', 'expired')
+        WHERE que_name = que_name AND state in ('created', 'expired')
         ORDER BY scheduled_at
-        LIMIT 10;) LOOP
+        LIMIT 10) LOOP
 
         IF pg_try_advisory_lock(que_msg.id) THEN
             RETURN ROW(
@@ -201,7 +208,7 @@ CREATE FUNCTION que_try_get_nowait(que_name text) RETURNS posthub_message AS $$
 
     END LOOP;
 
-    RETURN found_msg;
+    RETURN NULL;
   END
 $$
 LANGUAGE plpgsql;
@@ -209,29 +216,34 @@ LANGUAGE plpgsql;
 CREATE FUNCTION que_try_get_message_nowait(que_name text, id bigint) RETURNS posthub_message AS $$
   DECLARE
     que_config posthub_queue_config%ROWTYPE;
-    que_msg  posthub_message%ROWTYPE;
+    que_msg  posthub_queue%ROWTYPE;
   BEGIN
-    SELECT config.*
+    SELECT *
         INTO STRICT que_config
-        FROM posthub_queue_config as config
+        FROM posthub_queue_config
         WHERE
-            config.que_name = $1;
+            que_name = que_name;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            RAISE NOTICE 'Queue % not found', $1;
+            RAISE NOTICE 'Queue % not found', que_name;
             RETURN NULL;
         WHEN TOO_MANY_ROWS THEN
-            RAISE NOTICE 'Queue % not unique', $1;
+            RAISE NOTICE 'Queue % not unique', que_name;
             RETURN NULL;
 
-    IF NOT pg_try_advisory_lock($2) THEN
+    IF NOT pg_try_advisory_lock(id) THEN
         RETURN NULL;
     END IF;
 
-    SELECT * INTO STRICT que_msg FROM posthub_queue WHERE id = $2;
-    EXCEPTION
-        WHEN NO_DATA_FOUND THEN
-            RETURN NULL;
+    SELECT *
+        INTO STRICT que_msg
+        FROM posthub_queue
+        WHERE posthub_queue.id = id;
+
+    IF NOT FOUND THEN
+        RAISE NOTICE 'message % not found', id;
+        RETURN NULL;
+    END IF;
 
     RETURN ROW(
         que_msg.id,
@@ -250,7 +262,7 @@ LANGUAGE plpgsql;
 CREATE FUNCTION que_length(que_name text) RETURNS integer AS $$
   BEGIN
     RETURN (SELECT count(*) FROM posthub_queue
-    WHERE que_name = $1 AND state in ('created', 'active', 'expired', 'retry'));
+    WHERE que_name = que_name AND state in ('created', 'active', 'expired', 'retry'));
   END
 $$
 LANGUAGE plpgsql;
@@ -258,13 +270,13 @@ LANGUAGE plpgsql;
 
 CREATE FUNCTION que_ack_message(que_name text, id bigint) RETURNS void AS $$
   DECLARE
-    que_msg  posthub_message%ROWTYPE;
+    que_msg  posthub_queue%ROWTYPE;
   BEGIN
-    IF NOT pg_try_advisory_lock($2) THEN
+    IF NOT pg_try_advisory_lock(id) THEN
         RETURN;
     END IF;
 
-    DELETE * from posthub_queue WHERE id = $2 AND que_name = $1;
+    DELETE from posthub_queue WHERE id = id AND que_name = que_name;
   END
 $$
 LANGUAGE plpgsql;
@@ -272,14 +284,14 @@ LANGUAGE plpgsql;
 
 CREATE FUNCTION que_delete_message(que_name text, id bigint) RETURNS void AS $$
   DECLARE
-    que_msg  posthub_message%ROWTYPE;
+    que_msg  posthub_queue%ROWTYPE;
   BEGIN
-    SELECT * INTO STRICT que_msg FROM posthub_queue WHERE id = $2;
+    SELECT * INTO STRICT que_msg FROM posthub_queue WHERE id = id;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
             RETURN;
 
-    DELETE * from posthub_queue WHERE id = $2 AND que_name = $1;
+    DELETE from posthub_queue WHERE id = id AND que_name = que_name;
   END
 $$
 LANGUAGE plpgsql;
@@ -287,26 +299,26 @@ LANGUAGE plpgsql;
 
 CREATE FUNCTION que_try_get_failed_nowait(que_name text) RETURNS posthub_message AS $$
   DECLARE
-    found_msg posthub_message;
     que_config posthub_queue_config%ROWTYPE;
+    que_msg  posthub_queue%ROWTYPE;
   BEGIN
     SELECT config.*
             INTO STRICT que_config
             FROM posthub_queue_config as config
             WHERE
-                config.que_name = $1;
+                config.que_name = que_name;
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            RAISE NOTICE 'Queue % not found', $1;
+            RAISE NOTICE 'Queue % not found', que_name;
             RETURN NULL;
         WHEN TOO_MANY_ROWS THEN
-            RAISE NOTICE 'Queue % not unique', $1;
+            RAISE NOTICE 'Queue % not unique', que_name;
             RETURN NULL;
 
     FOR que_msg IN (SELECT * FROM posthub_queue
-        WHERE que_name = $1 AND state = 'failed'
+        WHERE que_name = que_name AND state = 'failed'
         ORDER BY enqueued_at
-        LIMIT 10;) LOOP
+        LIMIT 10) LOOP
 
         IF pg_try_advisory_lock(que_msg.id) THEN
             RETURN ROW(
@@ -323,7 +335,7 @@ CREATE FUNCTION que_try_get_failed_nowait(que_name text) RETURNS posthub_message
 
     END LOOP;
 
-    RETURN found_msg;
+    RETURN NULL;
   END
 $$
 LANGUAGE plpgsql;
