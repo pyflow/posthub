@@ -1,3 +1,3 @@
 __version__ = '0.1.0'
 
-__slots__ = ['locker']
+# __slots__ = ['locker', 'pubsub', 'queue', 'cli']

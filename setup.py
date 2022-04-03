@@ -14,4 +14,9 @@ setup(
             "pytest-asyncio"
         ]
     },
+    entry_points={
+        'console_scripts': [
+            'posthub_schema = posthub:cli_schema',
+        ],
+    },
 )
